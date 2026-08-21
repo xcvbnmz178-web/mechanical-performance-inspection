@@ -1,0 +1,68 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build
+build/
+dist/
+*.exe
+
+# Cache / temp
+*.tmp
+*.temp
+*.log
+*.jsonl
+*.bak
+*.swp
+*.swo
+~$*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/tmp/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local authentication, audit, and runtime databases
+/users.json
+/audit_log.jsonl
+/auth/users.json
+/auth/audit_log.jsonl
+/catalogs/staff.local.json
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated field/report data
+생성보고서/
+성능점검사진/
+/generated_reports/
+/output/
+
+# Report prototypes, rendered QA artifacts, and licensed/private source documents
+/report/design_prototype/
+
+# Real project data
+*_현장정보.json
+*_성능점검프로젝트.json
+
+# Historical source snapshots and one-off local diagnostics
+/main_backup.py
+/main_staff_v*.py
+/main_v*.py
+!/main_v316_1_audit_fix.py
+/test_hwp.py
+/build_v315_exe*.bat
+
+# Local clean-repository preparation and history backup
+/github_clean_repository/
+/local_history_backup/
