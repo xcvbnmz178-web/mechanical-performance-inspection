@@ -185,9 +185,10 @@ def build_production_report_view(
         inspection_period=_period(values),
         report_date=_first(values, "보고서작성일", "성능점검기준일", "점검일"),
     )
-    first_target = _target_view(document, document.targets[0]) if document.targets else None
-    if first_target:
-        assert_summary_detail_consistency(first_target.items)
+    targets = tuple(_target_view(document, target) for target in document.targets)
+    for target in targets:
+        assert_summary_detail_consistency(target.items)
+    first_target = targets[0] if targets else None
     result_rows = []
     for target in document.targets:
         summary, action = _judgment_summary(target)
@@ -205,7 +206,17 @@ def build_production_report_view(
         warnings.append("회사정보 로컬 설정이 없어 TEST placeholder를 사용함")
     if not document.targets:
         warnings.append("출력할 점검대상이 없음")
-    return ProductionReportView(site, company, tuple(result_rows), first_target, tuple(warnings))
+    for target_index, target in enumerate(targets, 1):
+        if not target.items:
+            warnings.append(f"점검대상 {target_index}: 출력할 점검항목이 없음")
+    return ProductionReportView(
+        site=site,
+        company=company,
+        result_rows=tuple(result_rows),
+        first_target=first_target,
+        warnings=tuple(warnings),
+        targets=targets,
+    )
 
 
 def customer_visible_text(view: ProductionReportView) -> str:
@@ -216,11 +227,11 @@ def customer_visible_text(view: ProductionReportView) -> str:
     ]
     for row in view.result_rows:
         values.extend((row.equipment_type, row.management_no, row.judgment_summary, row.action_note))
-    if view.first_target:
-        values.extend((view.first_target.equipment_type, view.first_target.management_no))
-        if view.first_target.overview_photo:
-            values.append(view.first_target.overview_photo.caption)
-        for item in view.first_target.items:
+    for target in view.targets:
+        values.extend((target.equipment_type, target.management_no))
+        if target.overview_photo:
+            values.append(target.overview_photo.caption)
+        for item in target.items:
             values.extend((
                 item.item_no, item.item_name, item.inspection_method,
                 item.inspection_criteria, item.reference_value, item.measured_value,

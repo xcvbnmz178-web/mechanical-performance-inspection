@@ -1,4 +1,4 @@
-"""Customer-facing read models for the first production HWP report slice."""
+"""Customer-facing read models for the production HWP report."""
 
 from dataclasses import dataclass, field
 
@@ -71,3 +71,4 @@ class ProductionReportView:
     result_rows: tuple[ProductionResultSummaryRow, ...] = ()
     first_target: ProductionTargetView | None = None
     warnings: tuple[str, ...] = ()
+    targets: tuple[ProductionTargetView, ...] = ()

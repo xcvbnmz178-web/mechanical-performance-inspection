@@ -1,4 +1,4 @@
-"""Production HWP renderer for the approved first report slice.
+"""Production HWP renderer for the approved report front and all targets.
 
 The renderer creates a transient A4 HTML representation and asks Hangul COM to
 import and save it as HWP.  The HTML is never a deliverable and is always removed.
@@ -16,6 +16,10 @@ from typing import Any, Callable
 
 from .hwp_adapter import HwpAdapterError, HwpComUnavailableError, _default_com_factory
 from .production_model import ProductionInspectionItemView, ProductionReportView
+from .production_page_plan import (
+    ProductionPagePlan,
+    plan_production_pages,
+)
 from .production_view import validate_customer_visible_text
 
 
@@ -39,17 +43,13 @@ def _safe(value) -> str:
     return escape("" if value is None else str(value)).replace("\n", "<br>")
 
 
-def _chunks(values, size):
-    return [values[index:index + size] for index in range(0, len(values), size)] or [[]]
-
-
 def _image_source(path: str) -> str:
     """Use the local path form accepted by Hangul's HTML importer."""
     return escape(str(Path(path).resolve()).replace("\\", "/"), quote=True)
 
 
 class HwpProductionRenderer:
-    """Create the first production-report slice without legacy HWP templates."""
+    """Create the production-report front and target pages without legacy templates."""
 
     def __init__(self, com_factory: Callable[[], Any] | None = None):
         self._com_factory = com_factory or _default_com_factory
@@ -93,7 +93,9 @@ class HwpProductionRenderer:
         if preview and not preview.parent.is_dir():
             raise HwpAdapterError(f"PDF 비교본 출력 폴더가 없습니다: {preview.parent}")
 
-        html_text, page_count = self._build_html(view)
+        page_plan = plan_production_pages(view)
+        html_text = self._build_html(view, page_plan)
+        page_count = page_plan.total_page_count
         style_match = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
         body_match = re.search(r"<body>(.*?)</body>", html_text, re.DOTALL)
         if not style_match or not body_match:
@@ -163,12 +165,9 @@ class HwpProductionRenderer:
             for temporary_page in temporary_pages:
                 temporary_page.unlink(missing_ok=True)
 
-    def _build_html(self, view: ProductionReportView) -> tuple[str, int]:
+    def _build_html(self, view: ProductionReportView, page_plan: ProductionPagePlan) -> str:
         pages: list[str] = []
-        planned_total = 18
-        if view.first_target:
-            planned_total += len(_chunks(list(view.first_target.items), 7))
-            planned_total += len(_chunks(list(view.first_target.items), 3))
+        planned_total = page_plan.total_page_count
 
         def page(title: str, body: str, page_no: int, kicker: str = "") -> str:
             return f"""
@@ -205,15 +204,22 @@ class HwpProductionRenderer:
         pages.append(page("기계설비 성능점검 결과보고서", self._result_form(view), 17, "PART 2 · RESULT FORM 01"))
         pages.append(page("점검결과 내역서", self._result_details(view), 18, "PART 2 · RESULT FORM 02"))
 
-        target = view.first_target
-        if target:
-            item_chunks = _chunks(list(target.items), 7)
+        for target_plan in page_plan.target_plans:
+            target = view.targets[target_plan.target_index]
+            item_chunks = [
+                list(target.items[start:stop])
+                for start, stop in target_plan.inspection_item_ranges
+            ]
             for index, items in enumerate(item_chunks):
                 title = f"기계설비 성능점검표 - {target.equipment_type} {target.management_no}"
                 if index:
                     title += " (계속)"
                 pages.append(page(title, self._inspection_table(target, items, index == 0), len(pages) + 1, "PART 3 · PERFORMANCE INSPECTION"))
-            for items in _chunks(list(target.items), 3):
+            detail_chunks = [
+                list(target.items[start:stop])
+                for start, stop in target_plan.detail_item_ranges
+            ]
+            for items in detail_chunks:
                 pages.append(page(
                     f"점검항목별 상세 검토 - {target.equipment_type} {target.management_no}",
                     self._detail_items(items), len(pages) + 1,
@@ -239,7 +245,11 @@ table {{ width:100%; border-collapse:collapse; table-layout:fixed; margin:3mm 0;
 .detail {{ border:1pt solid {LINE}; padding:3mm; margin-bottom:4mm; min-height:58mm; }} .detail-grid {{ width:100%; }}
 .photo {{ max-width:70mm; max-height:35mm; object-fit:contain; border:1pt solid {LINE}; }} .muted {{ color:{MID}; font-size:7pt; }}
 """
-        return "<!doctype html><html><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + "<!--PRODUCTION_PAGE_BREAK-->".join(pages) + "</body></html>", len(pages)
+        if len(pages) != page_plan.total_page_count:
+            raise HwpAdapterError(
+                f"페이지 계획과 렌더링 결과가 다릅니다: 계획 {page_plan.total_page_count}, 생성 {len(pages)}"
+            )
+        return "<!doctype html><html><head><meta charset='utf-8'><style>" + css + "</style></head><body>" + "<!--PRODUCTION_PAGE_BREAK-->".join(pages) + "</body></html>"
 
     @staticmethod
     def _cover(view: ProductionReportView) -> str:

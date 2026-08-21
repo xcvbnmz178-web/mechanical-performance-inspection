@@ -7,9 +7,11 @@ import zlib
 
 from report.hwp_production_renderer import HwpProductionRenderer
 from report.production_model import ProductionCompanyView
+from report.production_page_plan import plan_production_pages
 from report.production_service import generate_production_hwp, prepare_production_report
 from report.production_view import (
     FORBIDDEN_CUSTOMER_TOKENS,
+    assert_summary_detail_consistency,
     customer_visible_text,
     validate_customer_visible_text,
 )
@@ -68,6 +70,55 @@ def project_fixture(photo_root: Path | None = None):
     }
 
 
+def project_with_item_counts(*item_counts: int):
+    project = project_fixture()
+    if not item_counts:
+        project["점검대상선정"] = []
+        project["설비별점검결과"] = {}
+        project["장비대장"] = []
+        project["사진관리"] = []
+        return project
+    targets = []
+    equipment = []
+    results = {}
+    template = project["설비별점검결과"]["냉동기|1|0|0"][0]
+    for target_index, item_count in enumerate(item_counts):
+        number = target_index + 1
+        equipment_id = f"internal-equipment-{number}"
+        target_key = f"냉동기|{number}|{target_index}|{target_index}"
+        equipment.append({
+            "equipment_id": equipment_id,
+            "설비종류": "냉동기",
+            "관리번호": f"CH-{number:02d}",
+            "설치위치": f"기계실 {number}",
+            "주요사양": f"TEST 사양 {number}",
+        })
+        targets.append({
+            "equipment_id": equipment_id,
+            "설비종류": "냉동기",
+            "점검번호": str(number),
+            "장비대장행": target_index,
+        })
+        results[target_key] = [
+            {
+                **template,
+                "equipment_id": equipment_id,
+                "번호": str(item_index),
+                "점검내용": f"CH-{number:02d} 점검항목 {item_index}",
+                "점검방법": "확인",
+                "점검기준": "TEST 기준",
+                "측정확인값": f"측정값 {number}-{item_index}",
+                "기술적소견": "정상",
+            }
+            for item_index in range(1, item_count + 1)
+        ]
+    project["장비대장"] = equipment
+    project["점검대상선정"] = targets
+    project["설비별점검결과"] = results
+    project["사진관리"] = []
+    return project
+
+
 class FakeHwp:
     def __init__(self):
         self.opened_html = ""
@@ -111,6 +162,52 @@ class ProductionReportTests(unittest.TestCase):
         self.assertEqual(len(view.first_target.items), 2)
         self.assertEqual(view.first_target.items[1].measured_value, "7.2 mmHg")
         self.assertEqual(view.first_target.items[1].technical_note, "기준범위 이내.")
+        self.assertEqual(len(view.targets), 2)
+        self.assertEqual(view.targets[1].management_no, "CH-02")
+        self.assertEqual(len(view.targets[1].items), 1)
+
+    def test_page_plan_for_zero_one_and_two_targets(self):
+        empty_plan = plan_production_pages(prepare_production_report(project_with_item_counts()))
+        self.assertEqual(empty_plan.total_page_count, 18)
+        self.assertEqual(empty_plan.target_plans, ())
+
+        one_plan = plan_production_pages(prepare_production_report(project_with_item_counts(15)))
+        self.assertEqual(one_plan.total_page_count, 26)
+        self.assertEqual(one_plan.target_plans[0].inspection_page_count, 3)
+        self.assertEqual(one_plan.target_plans[0].detail_page_count, 5)
+
+        two_plan = plan_production_pages(prepare_production_report(project_with_item_counts(2, 8)))
+        self.assertEqual(two_plan.total_page_count, 25)
+        self.assertEqual(
+            [plan.inspection_page_count for plan in two_plan.target_plans], [1, 2]
+        )
+        self.assertEqual(
+            [plan.detail_page_count for plan in two_plan.target_plans], [1, 3]
+        )
+        self.assertEqual(two_plan.target_plans[0].inspection_start_page, 19)
+        self.assertEqual(two_plan.target_plans[1].inspection_start_page, 21)
+
+    def test_renderer_outputs_every_target_without_item_mixing(self):
+        project = project_with_item_counts(2, 8)
+        view = prepare_production_report(project)
+        for target in view.targets:
+            assert_summary_detail_consistency(target.items)
+            expected_prefix = target.management_no
+            for item in target.items:
+                self.assertTrue(item.item_name.startswith(expected_prefix))
+        fake = FakeHwp()
+        with tempfile.TemporaryDirectory() as directory:
+            result = generate_production_hwp(
+                project,
+                Path(directory) / "all-targets.hwp",
+                renderer=HwpProductionRenderer(lambda: fake),
+            )
+        self.assertEqual(result.page_count, 25)
+        self.assertEqual(fake.inserted_pages, 24)
+        self.assertIn("CH-01 점검항목 1", fake.opened_html)
+        self.assertIn("CH-02 점검항목 8", fake.opened_html)
+        self.assertEqual(fake.opened_html.count("측정값 1-1"), 2)
+        self.assertEqual(fake.opened_html.count("측정값 2-8"), 2)
 
     def test_internal_identifiers_are_not_customer_values(self):
         view = prepare_production_report(project_fixture())
@@ -127,23 +224,21 @@ class ProductionReportTests(unittest.TestCase):
             self.assertEqual(len(photos), 1)
             self.assertEqual(photos[0].caption, "첫 장비 사진")
             self.assertNotIn("second.png", photos[0].file_path)
+            second_photos = view.targets[1].items[0].photos
+            self.assertEqual(len(second_photos), 1)
+            self.assertEqual(second_photos[0].caption, "다른 장비 사진")
+            self.assertNotIn("first.png", second_photos[0].file_path)
 
     def test_fifteen_items_drive_page_plan_without_summary_detail_split(self):
-        project = project_fixture()
-        key = "냉동기|1|0|0"
-        template = project["설비별점검결과"][key][0]
-        project["설비별점검결과"][key] = [
-            {**template, "번호": str(index), "점검내용": f"점검항목 {index}"}
-            for index in range(1, 16)
-        ]
+        project = project_with_item_counts(15, 1)
         fake = FakeHwp()
         renderer = HwpProductionRenderer(lambda: fake)
         with tempfile.TemporaryDirectory() as directory:
             result = generate_production_hwp(
                 project, Path(directory) / "fifteen.hwp", renderer=renderer
             )
-        self.assertEqual(result.page_count, 26)
-        self.assertEqual(fake.inserted_pages, 25)
+        self.assertEqual(result.page_count, 28)
+        self.assertEqual(fake.inserted_pages, 27)
 
     def test_fake_hwp_generation_and_pdf_preview(self):
         fake = FakeHwp()
@@ -163,6 +258,7 @@ class ProductionReportTests(unittest.TestCase):
             self.assertEqual(fake.inserted_pages, result.page_count - 1)
             self.assertIn("TEST 현장", fake.opened_html)
             self.assertIn("CH-01", fake.opened_html)
+            self.assertIn("CH-02", fake.opened_html)
             self.assertNotIn("internal-equipment-one", fake.opened_html)
             for token in FORBIDDEN_CUSTOMER_TOKENS:
                 self.assertNotIn(token, fake.opened_html)
@@ -176,7 +272,10 @@ class ProductionReportTests(unittest.TestCase):
             pdf_preview_path=Path(preview_value) if preview_value else None,
         )
         self.assertTrue(output.is_file() and output.stat().st_size > 0)
-        self.assertGreaterEqual(result.page_count, 20)
+        expected = plan_production_pages(
+            prepare_production_report(project_fixture(output.parent))
+        ).total_page_count
+        self.assertEqual(result.page_count, expected)
         if preview_value:
             preview = Path(preview_value)
             self.assertTrue(preview.is_file() and preview.stat().st_size > 0)
