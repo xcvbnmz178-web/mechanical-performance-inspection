@@ -56,12 +56,9 @@ class TechnicianPageMixin:
         self.technician_table.setAlternatingRowColors(True)
 
         header = self.technician_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        for column, width in enumerate((100, 140, 75, 130, 120, 120)):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+            self.technician_table.setColumnWidth(column, width)
         header.setSectionResizeMode(6, QHeaderView.Stretch)
 
         layout.addWidget(self.technician_table)
