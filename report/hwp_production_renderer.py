@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 from typing import Any, Callable
 
 from .hwp_adapter import HwpAdapterError, HwpComUnavailableError, _default_com_factory
@@ -55,11 +56,38 @@ class HwpProductionRenderer:
         self._com_factory = com_factory or _default_com_factory
 
     @staticmethod
+    def _trace(message: str) -> None:
+        trace_path = os.environ.get("HWP_PRODUCTION_TRACE_LOG", "").strip()
+        if not trace_path:
+            return
+        with open(trace_path, "a", encoding="utf-8") as trace_file:
+            trace_file.write(f"{time.monotonic():.3f} {message}\n")
+            trace_file.flush()
+
+    @staticmethod
     def _set_visibility(hwp: Any, visible: bool) -> None:
         try:
             hwp.XHwpWindows.Item(0).Visible = visible
         except Exception:
             pass
+
+    @classmethod
+    def _prepare_automation(cls, hwp: Any) -> None:
+        for module_name in (
+            "FilePathCheckerModuleExample",
+            "FilePathCheckerModule",
+        ):
+            try:
+                if hwp.RegisterModule("FilePathCheckDLL", module_name):
+                    cls._trace("security module registered")
+                    break
+            except Exception:
+                continue
+        try:
+            hwp.SetMessageBoxMode(0x00010000)
+            cls._trace("message box mode configured")
+        except Exception:
+            cls._trace("message box mode unavailable")
 
     @staticmethod
     def _close(hwp: Any) -> None:
@@ -123,12 +151,18 @@ class HwpProductionRenderer:
             temporary_pages.append(temporary_page)
         hwp = None
         try:
+            self._trace("COM create start")
             hwp = self._com_factory()
+            self._trace("COM create complete")
             self._set_visibility(hwp, visible)
+            self._prepare_automation(hwp)
+            self._trace("HTML open 1 start")
             opened = hwp.Open(str(temporary_pages[0]), "HTML", "")
+            self._trace("HTML open 1 complete")
             if opened is False:
                 raise HwpAdapterError("한글에서 임시 A4 보고서를 열지 못했습니다")
-            for temporary_page in temporary_pages[1:]:
+            for page_index, temporary_page in enumerate(temporary_pages[1:], 2):
+                self._trace(f"HTML insert {page_index}/{page_count} start")
                 try:
                     hwp.MovePos(3, 0, 0)
                 except Exception as error:
@@ -137,14 +171,19 @@ class HwpProductionRenderer:
                     raise HwpAdapterError("정식 보고서 페이지 나눔 삽입에 실패했습니다")
                 if hwp.Insert(str(temporary_page), "HTML", "") is False:
                     raise HwpAdapterError("정식 보고서 페이지 삽입에 실패했습니다")
+                self._trace(f"HTML insert {page_index}/{page_count} complete")
+            self._trace("HWP save start")
             saved = hwp.SaveAs(str(output), "HWP", "")
+            self._trace("HWP save complete")
             if saved is False:
                 raise HwpAdapterError("정식 HWP 저장에 실패했습니다")
             if not output.is_file() or output.stat().st_size <= 0:
                 raise HwpAdapterError("생성된 정식 HWP 파일이 없거나 비어 있습니다")
             preview_value = ""
             if preview:
+                self._trace("PDF save start")
                 converted = hwp.SaveAs(str(preview), "PDF", "")
+                self._trace("PDF save complete")
                 if converted is False or not preview.is_file() or preview.stat().st_size <= 0:
                     raise HwpAdapterError("시각 비교용 PDF 변환에 실패했습니다")
                 preview_value = str(preview)
@@ -160,8 +199,12 @@ class HwpProductionRenderer:
             raise HwpAdapterError(f"정식 HWP 생성 실패: {error}") from error
         finally:
             if hwp is not None:
+                self._trace("Clear start")
                 self._close(hwp)
+                self._trace("Clear complete")
+                self._trace("Quit start")
                 self._quit(hwp)
+                self._trace("Quit complete")
             for temporary_page in temporary_pages:
                 temporary_page.unlink(missing_ok=True)
 
@@ -226,6 +269,37 @@ class HwpProductionRenderer:
                     "PART 3 · ITEM DETAIL + PHOTO",
                 ))
 
+        for start, stop in page_plan.system_summary_ranges:
+            pages.append(page(
+                "기계설비 성능점검 시 검토사항 - 시스템검토 요약",
+                self._system_summary(view, start, stop), len(pages) + 1,
+                "PART 4 · SYSTEM REVIEW SUMMARY",
+            ))
+        for start, stop in page_plan.document_review_ranges:
+            pages.append(page(
+                "자료보유 및 확인사항",
+                self._document_review(view, start, stop), len(pages) + 1,
+                "PART 4 · DOCUMENT REVIEW",
+            ))
+        for start, stop in page_plan.operation_review_ranges:
+            pages.append(page(
+                "작동상태 및 운전검토",
+                self._operation_review(view, start, stop), len(pages) + 1,
+                "PART 4 · OPERATION REVIEW",
+            ))
+        for start, stop in page_plan.aging_ranges:
+            pages.append(page(
+                "내구연수에 따른 노후도 분석",
+                self._aging_review(view, start, stop), len(pages) + 1,
+                "PART 5 · AGING ANALYSIS",
+            ))
+        for start, stop in page_plan.improvement_ranges:
+            pages.append(page(
+                "성능개선계획",
+                self._improvement_review(view, start, stop), len(pages) + 1,
+                "PART 5 · IMPROVEMENT PLAN",
+            ))
+
         css = f"""
 @page {{ size: A4; margin: 0; }}
 * {{ box-sizing: border-box; }}
@@ -241,6 +315,11 @@ body {{ margin: 0; color: {INK}; font-family: 'Malgun Gothic'; }}
 table {{ width:100%; border-collapse:collapse; table-layout:fixed; margin:3mm 0; }} th {{ background:{NAVY}; color:white; font-size:7.6pt; padding:2.2mm 1.5mm; border:.5pt solid {LINE}; }} td {{ font-size:7.4pt; line-height:1.35; padding:2mm 1.5mm; border:.5pt solid {LINE}; vertical-align:middle; word-break:break-all; }}
 .result th:nth-child(1){{width:18%}} .result th:nth-child(2){{width:15%}} .result th:nth-child(3){{width:22%}}
 .inspection th:nth-child(1){{width:5%}} .inspection th:nth-child(2){{width:13%}} .inspection th:nth-child(3){{width:14%}} .inspection th:nth-child(4){{width:20%}} .inspection th:nth-child(5){{width:11%}} .inspection th:nth-child(6){{width:11%}} .inspection th:nth-child(7){{width:9%}} .inspection th:nth-child(8){{width:17%}}
+.system-summary th:nth-child(1){{width:17%}} .system-summary th:nth-child(2){{width:23%}} .system-summary th:nth-child(3){{width:35%}} .system-summary th:nth-child(4){{width:25%}}
+.document-review th:nth-child(1){{width:38%}} .document-review th:nth-child(2){{width:12%}} .document-review th:nth-child(3){{width:25%}} .document-review th:nth-child(4){{width:25%}}
+.operation-review th:nth-child(1){{width:12%}} .operation-review th:nth-child(2){{width:17%}} .operation-review th:nth-child(3){{width:16%}} .operation-review th:nth-child(4){{width:10%}} .operation-review th:nth-child(5){{width:27%}} .operation-review th:nth-child(6){{width:18%}}
+.aging-review th:nth-child(1){{width:17%}} .aging-review th:nth-child(2){{width:12%}} .aging-review th:nth-child(3){{width:12%}} .aging-review th:nth-child(4){{width:14%}} .aging-review th:nth-child(5){{width:12%}} .aging-review th:nth-child(6){{width:13%}} .aging-review th:nth-child(7){{width:20%}}
+.improvement-review th:nth-child(1){{width:13%}} .improvement-review th:nth-child(2){{width:15%}} .improvement-review th:nth-child(3){{width:22%}} .improvement-review th:nth-child(4){{width:25%}} .improvement-review th:nth-child(5){{width:17%}} .improvement-review th:nth-child(6){{width:8%}}
 .equipment td {{ background:{PALE}; font-size:8pt; }}
 .detail {{ border:1pt solid {LINE}; padding:3mm; margin-bottom:4mm; min-height:58mm; }} .detail-grid {{ width:100%; }}
 .photo {{ max-width:70mm; max-height:35mm; object-fit:contain; border:1pt solid {LINE}; }} .muted {{ color:{MID}; font-size:7pt; }}
@@ -310,3 +389,65 @@ table {{ width:100%; border-collapse:collapse; table-layout:fixed; margin:3mm 0;
                 photos = "<div class='muted'>등록된 항목 사진 없음</div>"
             blocks.append(f"<div class='detail'><div class='subtitle'>{_safe(item.item_no)}. {_safe(item.item_name)}</div><table class='detail-grid'><tr><td><p><b>점검방법</b> {_safe(item.inspection_method)}</p><p><b>점검기준</b> {_safe(item.inspection_criteria)}</p><p><b>설계·정격값</b> {_safe(item.reference_value)}</p><p><b>측정·확인값</b> {_safe(item.measured_value)}</p><p><b>판정</b> {_safe(item.judgment)}</p><p><b>기술적소견</b> {_safe(item.technical_note)}</p></td><td>{photos}</td></tr></table></div>")
         return "".join(blocks)
+
+    @staticmethod
+    def _empty_section(status: str) -> str:
+        return f"<div class='box'><p><b>{_safe(status or '자료없음')}</b></p><p>저장된 검토자료가 없습니다.</p></div>"
+
+    @classmethod
+    def _system_summary(cls, view, start, stop):
+        rows = view.system_review.summary_rows[start:stop]
+        if not rows:
+            return cls._empty_section(view.system_review.status)
+        body = "".join(
+            f"<tr><td>{_safe(row.review_item)}</td><td>{_safe(row.detail)}</td><td>{_safe(row.standard)}</td><td>{_safe(row.result)}</td></tr>"
+            for row in rows
+        )
+        return "<div class='title'>시스템검토 요약</div><table class='system-summary'><tr><th>점검항목</th><th>세부 검토사항</th><th>검토기준</th><th>결과요약</th></tr>" + body + "</table>"
+
+    @classmethod
+    def _document_review(cls, view, start, stop):
+        rows = view.system_review.document_rows[start:stop]
+        if not rows:
+            return cls._empty_section("자료없음")
+        body = "".join(
+            f"<tr><td>{_safe(row.document_name)}</td><td>{_safe(row.status)}</td><td>{_safe(row.engineer_note)}</td><td>{_safe(row.remark)}</td></tr>"
+            for row in rows
+        )
+        return "<div class='title'>자료보유 및 확인사항</div><table class='document-review'><tr><th>구비서류</th><th>보유상태</th><th>책임기술자 소견</th><th>비고</th></tr>" + body + "</table>"
+
+    @classmethod
+    def _operation_review(cls, view, start, stop):
+        rows = view.system_review.operation_rows[start:stop]
+        if not rows:
+            return cls._empty_section("자료없음")
+        body = "".join(
+            f"<tr><td>{_safe(row.review_type)}</td><td>{_safe(row.category)}</td><td>{_safe(row.equipment_name)}</td><td>{_safe(row.result)}</td><td>{_safe(row.basis)}</td><td>{_safe(row.remark)}</td></tr>"
+            for row in rows
+        )
+        return "<div class='title'>작동상태 및 운전검토</div><table class='operation-review'><tr><th>검토구분</th><th>구분</th><th>대상설비</th><th>결과</th><th>비교근거</th><th>비고</th></tr>" + body + "</table>"
+
+    @classmethod
+    def _aging_review(cls, view, start, stop):
+        rows = view.aging.rows[start:stop]
+        if not rows:
+            return cls._empty_section(view.aging.status)
+        body = "".join(
+            f"<tr><td>{_safe(row.equipment_type)}</td><td>{_safe(row.management_no)}</td><td>{_safe(row.installation_year)}</td><td>{_safe(row.reference_lifespan)}</td><td>{_safe(row.elapsed_years)}</td><td>{_safe(row.aging_status)}</td><td>{_safe(row.note)}</td></tr>"
+            for row in rows
+        )
+        opinion = ""
+        if stop == len(view.aging.rows):
+            opinion = f"<div class='box'><p><b>적용근거</b> {_safe(view.aging.reference_source)}</p><p><b>종합의견</b> {_safe(view.aging.overall_opinion or '확인필요')}</p></div>"
+        return "<div class='title'>노후도 분석</div><table class='aging-review'><tr><th>대상설비</th><th>관리번호</th><th>설치연도</th><th>참고 내용연수</th><th>사용연수</th><th>상태</th><th>비고</th></tr>" + body + "</table>" + opinion
+
+    @classmethod
+    def _improvement_review(cls, view, start, stop):
+        rows = view.improvements.rows[start:stop]
+        if not rows:
+            return cls._empty_section(view.improvements.status)
+        body = "".join(
+            f"<tr><td>{_safe(row.section)}</td><td>{_safe(row.target_label)}</td><td>{_safe(row.issue)}</td><td>{_safe(row.action)}</td><td>{_safe(row.schedule)}</td><td>{_safe(row.status)}</td></tr>"
+            for row in rows
+        )
+        return "<div class='title'>성능개선계획</div><table class='improvement-review'><tr><th>구분</th><th>대상설비</th><th>검토사항</th><th>개선내용</th><th>일정</th><th>상태</th></tr>" + body + "</table>"

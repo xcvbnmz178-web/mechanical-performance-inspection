@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .model import (
+    AgingAnalysisSection,
     CalculationEntry,
     CriterionExecution,
     EnergyAnalysisSection,
@@ -308,6 +309,15 @@ def build_report_document(project_data: Mapping[str, Any]) -> ReportDocument:
         raw=energy_raw,
     )
 
+    aging_raw = _mapping(project_data.get("노후도분석", {}))
+    aging_rows = aging_raw.get("노후도표", [])
+    aging = AgingAnalysisSection(
+        rows=_rows(aging_rows),
+        reference_source=_text(aging_raw.get("내용연수적용근거", "")),
+        overall_opinion=_text(aging_raw.get("종합의견", "")),
+        raw=aging_raw,
+    )
+
     previous_raw = project_data.get("전년도비교", {})
     previous_rows = (
         previous_raw.get("비교결과", [])
@@ -342,6 +352,7 @@ def build_report_document(project_data: Mapping[str, Any]) -> ReportDocument:
         system_reviews=_system_review_entries(project_data.get("시스템검토", {})),
         performance_calculations=calculations,
         energy_analysis=energy,
+        aging_analysis=aging,
         previous_year_comparison=[PreviousComparisonEntry(row) for row in _rows(previous_rows)],
         root_cause_analysis=[RootCauseEntry(row) for row in _rows(project_data.get("원인분석", []))],
         improvement_plans=improvements,

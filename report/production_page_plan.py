@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from math import ceil
 
 from .production_model import ProductionInspectionItemView, ProductionReportView
@@ -33,13 +33,43 @@ class ProductionTargetPagePlan:
 class ProductionPagePlan:
     front_page_count: int
     target_plans: tuple[ProductionTargetPagePlan, ...]
+    system_summary_ranges: tuple[tuple[int, int], ...] = ()
+    document_review_ranges: tuple[tuple[int, int], ...] = ()
+    operation_review_ranges: tuple[tuple[int, int], ...] = ()
+    aging_ranges: tuple[tuple[int, int], ...] = ()
+    improvement_ranges: tuple[tuple[int, int], ...] = ()
     extension_page_count: int = 0
+
+    @property
+    def system_review_summary_page_count(self) -> int:
+        return len(self.system_summary_ranges)
+
+    @property
+    def document_review_page_count(self) -> int:
+        return len(self.document_review_ranges)
+
+    @property
+    def operation_review_page_count(self) -> int:
+        return len(self.operation_review_ranges)
+
+    @property
+    def aging_page_count(self) -> int:
+        return len(self.aging_ranges)
+
+    @property
+    def improvement_page_count(self) -> int:
+        return len(self.improvement_ranges)
 
     @property
     def total_page_count(self) -> int:
         return (
             self.front_page_count
             + sum(plan.total_page_count for plan in self.target_plans)
+            + self.system_review_summary_page_count
+            + self.document_review_page_count
+            + self.operation_review_page_count
+            + self.aging_page_count
+            + self.improvement_page_count
             + self.extension_page_count
         )
 
@@ -92,6 +122,26 @@ def _item_ranges(
     return tuple(ranges)
 
 
+def _row_ranges(rows, *, max_rows: int, max_characters: int):
+    if not rows:
+        return ((0, 0),)
+    ranges = []
+    start = 0
+    character_count = 0
+    for index, row in enumerate(rows):
+        row_characters = sum(len(str(value or "")) for value in astuple(row))
+        if index > start and (
+            index - start >= max_rows
+            or character_count + row_characters > max_characters
+        ):
+            ranges.append((start, index))
+            start = index
+            character_count = 0
+        character_count += row_characters
+    ranges.append((start, len(rows)))
+    return tuple(ranges)
+
+
 def plan_production_pages(view: ProductionReportView) -> ProductionPagePlan:
     """Calculate every target page before rendering starts."""
     target_plans = []
@@ -126,4 +176,22 @@ def plan_production_pages(view: ProductionReportView) -> ProductionPagePlan:
             )
         )
         next_page = detail_start + detail_pages
-    return ProductionPagePlan(FRONT_PAGE_COUNT, tuple(target_plans))
+    return ProductionPagePlan(
+        front_page_count=FRONT_PAGE_COUNT,
+        target_plans=tuple(target_plans),
+        system_summary_ranges=_row_ranges(
+            view.system_review.summary_rows, max_rows=3, max_characters=700
+        ),
+        document_review_ranges=_row_ranges(
+            view.system_review.document_rows, max_rows=6, max_characters=700
+        ),
+        operation_review_ranges=_row_ranges(
+            view.system_review.operation_rows, max_rows=5, max_characters=650
+        ),
+        aging_ranges=_row_ranges(
+            view.aging.rows, max_rows=5, max_characters=600
+        ),
+        improvement_ranges=_row_ranges(
+            view.improvements.rows, max_rows=2, max_characters=600
+        ),
+    )

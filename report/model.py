@@ -110,6 +110,14 @@ class EnergyAnalysisSection:
 
 
 @dataclass
+class AgingAnalysisSection:
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    reference_source: str = ""
+    overall_opinion: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PreviousComparisonEntry:
     values: dict[str, Any] = field(default_factory=dict)
 
@@ -137,6 +145,9 @@ class ReportDocument:
     performance_calculations: list[CalculationEntry] = field(default_factory=list)
     energy_analysis: EnergyAnalysisSection = field(
         default_factory=EnergyAnalysisSection
+    )
+    aging_analysis: AgingAnalysisSection = field(
+        default_factory=AgingAnalysisSection
     )
     previous_year_comparison: list[PreviousComparisonEntry] = field(
         default_factory=list

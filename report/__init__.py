@@ -1,6 +1,7 @@
 """Report read-model API, independent from HWP/PDF adapters."""
 
 from .model import (
+    AgingAnalysisSection,
     CalculationEntry,
     CriterionExecution,
     EnergyAnalysisSection,
@@ -45,12 +46,20 @@ from .template_contract import (
     validate_template_contract,
 )
 from .production_model import (
+    ProductionAgingRow,
+    ProductionAgingView,
     ProductionCompanyView,
+    ProductionDocumentReviewRow,
+    ProductionImprovementRow,
+    ProductionImprovementView,
     ProductionInspectionItemView,
+    ProductionOperationReviewRow,
     ProductionPhotoView,
     ProductionReportView,
     ProductionResultSummaryRow,
     ProductionSiteView,
+    ProductionSystemReviewSummaryRow,
+    ProductionSystemReviewView,
     ProductionTargetView,
 )
 from .production_page_plan import (
@@ -80,6 +89,7 @@ from .hwp_production_renderer import (
 
 __all__ = [
     "REPORT_MODEL_VERSION",
+    "AgingAnalysisSection",
     "CalculationEntry",
     "CriterionExecution",
     "EnergyAnalysisSection",
@@ -113,6 +123,14 @@ __all__ = [
     "MINIMAL_HWP_CONTRACT",
     "MINIMAL_REPEAT_HWP_CONTRACT",
     "ProductionCompanyView",
+    "ProductionSystemReviewSummaryRow",
+    "ProductionDocumentReviewRow",
+    "ProductionOperationReviewRow",
+    "ProductionSystemReviewView",
+    "ProductionAgingRow",
+    "ProductionAgingView",
+    "ProductionImprovementRow",
+    "ProductionImprovementView",
     "ProductionInspectionItemView",
     "ProductionPhotoView",
     "ProductionReportView",
