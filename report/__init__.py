@@ -71,9 +71,15 @@ from .production_page_plan import (
     plan_production_pages,
 )
 from .production_service import (
+    OFFICIAL_FILE_PATH_CHECK_DLL,
+    ProductionPhotoFileMissingError,
+    ProductionProjectDataError,
+    ProductionSecurityModuleMissingError,
     generate_production_hwp,
     load_local_company_profile,
     prepare_production_report,
+    validate_production_document,
+    verify_production_hwp_environment,
 )
 from .production_view import (
     FORBIDDEN_CUSTOMER_TOKENS,
@@ -84,7 +90,10 @@ from .production_view import (
 )
 from .hwp_production_renderer import (
     HwpProductionRenderer,
+    HwpSecurityModuleRegistrationError,
     ProductionHwpResult,
+    ProductionHwpSaveError,
+    ProductionPdfSaveError,
 )
 
 __all__ = [
@@ -145,6 +154,13 @@ __all__ = [
     "plan_production_pages",
     "ProductionHwpResult",
     "HwpProductionRenderer",
+    "HwpSecurityModuleRegistrationError",
+    "ProductionHwpSaveError",
+    "ProductionPdfSaveError",
+    "OFFICIAL_FILE_PATH_CHECK_DLL",
+    "ProductionSecurityModuleMissingError",
+    "ProductionProjectDataError",
+    "ProductionPhotoFileMissingError",
     "FORBIDDEN_CUSTOMER_TOKENS",
     "assert_summary_detail_consistency",
     "build_production_report_view",
@@ -153,6 +169,8 @@ __all__ = [
     "load_local_company_profile",
     "prepare_production_report",
     "generate_production_hwp",
+    "validate_production_document",
+    "verify_production_hwp_environment",
     "RepeatColumnContract",
     "RepeatSectionContract",
     "TemplateContract",

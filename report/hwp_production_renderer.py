@@ -15,7 +15,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from .hwp_adapter import HwpAdapterError, HwpComUnavailableError, _default_com_factory
+from .hwp_adapter import HwpAdapterError, HwpComUnavailableError
 from .production_model import ProductionInspectionItemView, ProductionReportView
 from .production_page_plan import (
     ProductionPagePlan,
@@ -30,6 +30,30 @@ PALE = "#EAF0F6"
 INK = "#263442"
 MID = "#667788"
 LINE = "#B8C3CE"
+
+class HwpSecurityModuleRegistrationError(HwpAdapterError):
+    pass
+
+
+class ProductionHwpSaveError(HwpAdapterError):
+    pass
+
+
+class ProductionPdfSaveError(HwpAdapterError):
+    pass
+
+
+def _default_production_com_factory() -> Any:
+    """Create an isolated HWP process so an existing user document is untouched."""
+    try:
+        import win32com.client
+    except (ImportError, OSError) as error:
+        raise HwpComUnavailableError("pywin32 또는 HWP COM을 사용할 수 없습니다") from error
+    try:
+        return win32com.client.DispatchEx("HWPFrame.HwpObject")
+    except Exception as error:
+        raise HwpComUnavailableError("HWP COM 연결에 실패했습니다") from error
+
 
 
 @dataclass
@@ -53,7 +77,7 @@ class HwpProductionRenderer:
     """Create the production-report front and target pages without legacy templates."""
 
     def __init__(self, com_factory: Callable[[], Any] | None = None):
-        self._com_factory = com_factory or _default_com_factory
+        self._com_factory = com_factory or _default_production_com_factory
 
     @staticmethod
     def _trace(message: str) -> None:
@@ -73,16 +97,19 @@ class HwpProductionRenderer:
 
     @classmethod
     def _prepare_automation(cls, hwp: Any) -> None:
-        for module_name in (
-            "FilePathCheckerModuleExample",
-            "FilePathCheckerModule",
-        ):
-            try:
-                if hwp.RegisterModule("FilePathCheckDLL", module_name):
-                    cls._trace("security module registered")
-                    break
-            except Exception:
-                continue
+        try:
+            registered = hwp.RegisterModule(
+                "FilePathCheckDLL", "FilePathCheckerModuleExample"
+            )
+        except Exception as error:
+            raise HwpSecurityModuleRegistrationError(
+                "한글 자동화 보안모듈 등록 중 오류가 발생했습니다"
+            ) from error
+        if registered is not True:
+            raise HwpSecurityModuleRegistrationError(
+                "한글 자동화 보안모듈 등록에 실패했습니다"
+            )
+        cls._trace("security module registered")
         try:
             hwp.SetMessageBoxMode(0x00010000)
             cls._trace("message box mode configured")
@@ -110,6 +137,7 @@ class HwpProductionRenderer:
         *,
         visible: bool = False,
         pdf_preview_path: str | os.PathLike[str] | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> ProductionHwpResult:
         validate_customer_visible_text(view)
         output = Path(output_path).resolve()
@@ -151,6 +179,8 @@ class HwpProductionRenderer:
             temporary_pages.append(temporary_page)
         hwp = None
         try:
+            if progress_callback:
+                progress_callback("HWP 생성 중")
             self._trace("COM create start")
             hwp = self._com_factory()
             self._trace("COM create complete")
@@ -176,16 +206,20 @@ class HwpProductionRenderer:
             saved = hwp.SaveAs(str(output), "HWP", "")
             self._trace("HWP save complete")
             if saved is False:
-                raise HwpAdapterError("정식 HWP 저장에 실패했습니다")
+                raise ProductionHwpSaveError("정식 HWP 저장에 실패했습니다")
             if not output.is_file() or output.stat().st_size <= 0:
-                raise HwpAdapterError("생성된 정식 HWP 파일이 없거나 비어 있습니다")
+                raise ProductionHwpSaveError(
+                    "생성된 정식 HWP 파일이 없거나 비어 있습니다"
+                )
             preview_value = ""
             if preview:
                 self._trace("PDF save start")
+                if progress_callback:
+                    progress_callback("PDF 비교본 생성 중")
                 converted = hwp.SaveAs(str(preview), "PDF", "")
                 self._trace("PDF save complete")
                 if converted is False or not preview.is_file() or preview.stat().st_size <= 0:
-                    raise HwpAdapterError("시각 비교용 PDF 변환에 실패했습니다")
+                    raise ProductionPdfSaveError("시각 비교용 PDF 변환에 실패했습니다")
                 preview_value = str(preview)
             return ProductionHwpResult(
                 output_path=str(output),

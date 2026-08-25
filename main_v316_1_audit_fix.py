@@ -1,4 +1,5 @@
 import os
+import logging
 import shutil
 import xml.etree.ElementTree as ET
 import sys
@@ -245,6 +246,17 @@ from ui import (
     TechnicianPageMixin,
 )
 from report import (
+    HwpComUnavailableError,
+    HwpSecurityModuleRegistrationError,
+    ProductionHwpSaveError,
+    ProductionPdfSaveError,
+    ProductionPhotoFileMissingError,
+    ProductionProjectDataError,
+    ProductionSecurityModuleMissingError,
+    generate_production_hwp,
+    prepare_production_report,
+    validate_production_document,
+    verify_production_hwp_environment,
     HwpReportAdapter,
     MINIMAL_REPEAT_HWP_CONTRACT,
     build_report_document,
@@ -255,6 +267,36 @@ from report.phase3_test_runtime import (
     create_minimal_repeat_template,
     phase3_output_path,
 )
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def production_report_error_message(error):
+    if isinstance(error, ProductionSecurityModuleMissingError):
+        return (
+            "한글 자동화 보안모듈이 설치되지 않았습니다.\n"
+            f"{error}\n설치 상태를 확인하십시오."
+        )
+    if isinstance(error, HwpSecurityModuleRegistrationError):
+        return (
+            "한글 자동화 보안모듈을 등록하지 못했습니다.\n"
+            "FilePathCheckerModuleExample 등록 상태를 확인하십시오."
+        )
+    if isinstance(error, HwpComUnavailableError):
+        return "한글 프로그램에 연결하지 못했습니다. 한글 2024 설치 상태를 확인하십시오."
+    if isinstance(error, ProductionProjectDataError):
+        return f"정식 보고서에 필요한 프로젝트 데이터가 부족합니다.\n{error}"
+    if isinstance(error, ProductionPhotoFileMissingError):
+        return f"보고서에 연결된 사진 파일을 찾을 수 없습니다.\n{error}"
+    if isinstance(error, ProductionHwpSaveError):
+        return f"정식 HWP 저장에 실패했습니다.\n{error}"
+    if isinstance(error, ProductionPdfSaveError):
+        return f"PDF 비교본 변환에 실패했습니다.\n{error}"
+    return (
+        "정식 결과보고서 생성 중 오류가 발생했습니다.\n"
+        "프로젝트 데이터를 확인한 뒤 다시 시도하십시오."
+    )
 
 
 class PerformanceInspectionApp(
@@ -580,10 +622,9 @@ class PerformanceInspectionApp(
         layout.addWidget(title)
 
         notice = QLabel(
-            "보고서 자동생성 기능은 현재 보류 상태입니다. "
-            "기존 HWP 템플릿 방식은 사용하지 않고, "
-            "고정자료와 현장별 변동자료를 명확히 구분한 새 보고서 서식을 "
-            "별도로 설계한 뒤 연동할 예정입니다."
+            "공식 한컴 자동화 보안모듈을 사용하는 정식 결과보고서를 생성합니다. "
+            "최종 산출물은 HWP이며 확인용 PDF를 함께 저장합니다. "
+            "아래 Phase 1~3 테스트 보고서는 기존 검증 경로로 별도 유지됩니다."
         )
         notice.setWordWrap(True)
         notice.setStyleSheet(
@@ -603,6 +644,30 @@ class PerformanceInspectionApp(
         )
         layout.addWidget(detail)
 
+
+        production_notice = QLabel(
+            "현재 프로젝트의 전체 점검대상, 사진, 시스템검토, 노후도와 "
+            "개선계획을 반영하는 production 보고서입니다."
+        )
+        production_notice.setWordWrap(True)
+        production_notice.setStyleSheet(
+            "padding: 10px; background: #eef6ff; border: 1px solid #2c5f8a;"
+        )
+        layout.addWidget(production_notice)
+
+        self.production_report_button = QPushButton("정식 결과보고서 생성")
+        self.production_report_button.setMinimumHeight(48)
+        self.production_report_button.clicked.connect(
+            self.generate_production_report
+        )
+        layout.addWidget(self.production_report_button)
+
+        self.production_report_status = QLabel("정식 결과보고서: 생성 전")
+        self.production_report_status.setWordWrap(True)
+        self.production_report_status.setTextInteractionFlags(
+            Qt.TextSelectableByMouse
+        )
+        layout.addWidget(self.production_report_status)
         test_notice = QLabel(
             "Phase 1~3 검증 전용입니다. 현재 프로젝트를 읽기 전용 스냅샷으로 "
             "변환하여 최소 HWP 템플릿에 설비별 점검표를 반복 출력합니다. "
@@ -647,6 +712,104 @@ class PerformanceInspectionApp(
         layout.addWidget(previous_button)
 
         return page
+
+    def _set_production_report_status(self, text):
+        self.production_report_status.setText(f"정식 결과보고서: {text}")
+        self.status_label.setText(text)
+        QApplication.processEvents()
+
+    def generate_production_report(self):
+        """Generate the customer production HWP through production_service."""
+        self.save_current_inspection_detail()
+        preflight_issues = self.collect_report_criterion_preflight_issues()
+        if preflight_issues:
+            action, issue = self.show_report_preflight_dialog(preflight_issues)
+            if action == "move":
+                self.move_to_report_preflight_issue(issue)
+                return
+            if action != "continue":
+                return
+
+        self.production_report_button.setEnabled(False)
+        cursor_set = False
+        try:
+            self._set_production_report_status("보고서 데이터 준비 중")
+            project_snapshot = build_current_project_snapshot(self)
+            document = build_report_document(project_snapshot)
+            validate_production_document(document)
+            production_view = prepare_production_report(project_snapshot)
+
+            output_directory = Path.cwd() / "generated_reports"
+            output_directory.mkdir(parents=True, exist_ok=True)
+            site_name = str(document.site.values.get("현장명", "")).strip() or "현장"
+            default_name = self.safe_filename(
+                f"{site_name}_기계설비성능점검_결과보고서.hwp"
+            )
+            selected_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "정식 결과보고서 저장",
+                str(output_directory / default_name),
+                "한글 문서 (*.hwp)",
+            )
+            if not selected_path:
+                self._set_production_report_status("사용자 취소")
+                return
+
+            output_path = Path(selected_path)
+            if output_path.suffix.lower() != ".hwp":
+                output_path = output_path.with_suffix(".hwp")
+            pdf_path = output_path.with_suffix(".pdf")
+
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            cursor_set = True
+            self._set_production_report_status("한글 자동화 보안모듈 확인 중")
+            verify_production_hwp_environment()
+            self._set_production_report_status("HWP 생성 중")
+            result = generate_production_hwp(
+                project_snapshot,
+                output_path,
+                pdf_preview_path=pdf_path,
+                visible=False,
+                progress_callback=self._set_production_report_status,
+            )
+
+            self._production_last_report_path = result.output_path
+            warnings = list(dict.fromkeys(
+                list(document.report_warnings)
+                + list(production_view.warnings)
+                + list(result.warnings)
+            ))
+            warning_text = ""
+            if warnings:
+                warning_text = "\n\n경고:\n- " + "\n- ".join(warnings)
+            self._set_production_report_status("완료")
+            self.production_report_status.setText(
+                "정식 결과보고서 생성 완료\n"
+                f"HWP: {result.output_path}\n"
+                f"PDF: {result.pdf_preview_path}\n"
+                f"총 {result.page_count}쪽"
+            )
+            QMessageBox.information(
+                self,
+                "정식 결과보고서 생성 완료",
+                "정식 결과보고서 생성 완료\n\n"
+                f"HWP:\n{result.output_path}\n\n"
+                f"PDF:\n{result.pdf_preview_path}\n\n"
+                f"총 {result.page_count}쪽"
+                f"{warning_text}",
+            )
+        except Exception as error:
+            LOGGER.exception("Production HWP generation failed")
+            self._set_production_report_status("생성 실패")
+            QMessageBox.critical(
+                self,
+                "정식 결과보고서 생성 실패",
+                production_report_error_message(error),
+            )
+        finally:
+            if cursor_set:
+                QApplication.restoreOverrideCursor()
+            self.production_report_button.setEnabled(True)
 
     def generate_phase3_test_report(self):
         """Run the isolated Phase 1-3 report path without saving project JSON."""

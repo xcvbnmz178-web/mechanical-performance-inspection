@@ -5,10 +5,22 @@ import tempfile
 import unittest
 import zlib
 
-from report.hwp_production_renderer import HwpProductionRenderer
+from report.hwp_production_renderer import (
+    HwpProductionRenderer,
+    HwpSecurityModuleRegistrationError,
+)
 from report.production_model import ProductionCompanyView
 from report.production_page_plan import plan_production_pages
-from report.production_service import generate_production_hwp, prepare_production_report
+from report.production_service import (
+    ProductionPhotoFileMissingError,
+    ProductionProjectDataError,
+    ProductionSecurityModuleMissingError,
+    generate_production_hwp,
+    prepare_production_report,
+    validate_production_document,
+    verify_production_hwp_environment,
+)
+from report.service import build_report_document
 from report.production_view import (
     FORBIDDEN_CUSTOMER_TOKENS,
     assert_summary_detail_consistency,
@@ -213,6 +225,9 @@ class FakeHwp:
         self.saved = []
         self.inserted_pages = 0
         self.HAction = self
+
+    def RegisterModule(self, *_args):
+        return True
 
     def Open(self, path, *_args):
         self.opened_html = Path(path).read_text(encoding="cp949")
@@ -509,6 +524,91 @@ class ProductionReportTests(unittest.TestCase):
             self.assertNotIn("internal-equipment-one", fake.opened_html)
             for token in FORBIDDEN_CUSTOMER_TOKENS:
                 self.assertNotIn(token, fake.opened_html)
+
+    def test_production_environment_reports_missing_official_dll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "FilePathCheckerModuleExample.dll"
+            with self.assertRaises(ProductionSecurityModuleMissingError):
+                verify_production_hwp_environment(missing)
+
+    def test_production_environment_requires_true_registration_and_quits(self):
+        class SecurityHwp:
+            def __init__(self, registered):
+                self.registered = registered
+                self.cleared = False
+                self.quit_called = False
+
+            def RegisterModule(self, kind, name):
+                self.args = (kind, name)
+                return self.registered
+
+            def Clear(self, *_args):
+                self.cleared = True
+
+            def Quit(self):
+                self.quit_called = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            dll = Path(directory) / "FilePathCheckerModuleExample.dll"
+            dll.write_bytes(b"MZ")
+            failed = SecurityHwp(False)
+            with self.assertRaises(HwpSecurityModuleRegistrationError):
+                verify_production_hwp_environment(dll, com_factory=lambda: failed)
+            self.assertTrue(failed.cleared)
+            self.assertTrue(failed.quit_called)
+
+            passed = SecurityHwp(True)
+            verify_production_hwp_environment(dll, com_factory=lambda: passed)
+            self.assertEqual(
+                passed.args,
+                ("FilePathCheckDLL", "FilePathCheckerModuleExample"),
+            )
+            self.assertTrue(passed.cleared)
+            self.assertTrue(passed.quit_called)
+
+    def test_production_document_requires_target_results(self):
+        empty = build_report_document(project_with_item_counts())
+        with self.assertRaises(ProductionProjectDataError):
+            validate_production_document(empty)
+        validate_production_document(
+            build_report_document(project_with_item_counts(1))
+        )
+
+    def test_production_document_rejects_missing_photo_file(self):
+        project = project_with_item_counts(1)
+        project["사진관리"] = [{
+            "장비키": "냉동기|1|0|0",
+            "점검항목": "1. CH-01 점검항목 1",
+            "저장경로": str(Path("missing-production-photo.png").resolve()),
+        }]
+        document = build_report_document(project)
+        with self.assertRaises(ProductionPhotoFileMissingError):
+            validate_production_document(document)
+
+    def test_renderer_requires_true_security_registration(self):
+        class RejectedHwp(FakeHwp):
+            def RegisterModule(self, *_args):
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(HwpSecurityModuleRegistrationError):
+                generate_production_hwp(
+                    phase3_project_fixture(),
+                    Path(directory) / "rejected.hwp",
+                    renderer=HwpProductionRenderer(lambda: RejectedHwp()),
+                )
+
+    def test_generation_progress_reports_hwp_and_pdf_stages(self):
+        stages = []
+        with tempfile.TemporaryDirectory() as directory:
+            generate_production_hwp(
+                phase3_project_fixture(),
+                Path(directory) / "progress.hwp",
+                pdf_preview_path=Path(directory) / "progress.pdf",
+                renderer=HwpProductionRenderer(lambda: FakeHwp()),
+                progress_callback=stages.append,
+            )
+        self.assertEqual(stages, ["HWP 생성 중", "PDF 비교본 생성 중"])
 
     @unittest.skipUnless(os.environ.get("RUN_HWP_COM_TEST") == "1", "실제 HWP COM smoke test는 명시 실행")
     def test_actual_hwp_com_smoke(self):
