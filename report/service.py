@@ -309,7 +309,11 @@ def build_report_document(project_data: Mapping[str, Any]) -> ReportDocument:
         raw=energy_raw,
     )
 
-    aging_raw = _mapping(project_data.get("노후도분석", {}))
+    aging_input = project_data.get("노후도분석", {})
+    aging_raw = (
+        {"노후도표": deepcopy(aging_input)}
+        if isinstance(aging_input, list) else _mapping(aging_input)
+    )
     aging_rows = aging_raw.get("노후도표", [])
     aging = AgingAnalysisSection(
         rows=_rows(aging_rows),

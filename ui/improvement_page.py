@@ -1,4 +1,5 @@
 from PySide6.QtCore import QDate
+from catalogs.lifespan import DEFAULT_LIFESPAN_SOURCE
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -31,13 +32,17 @@ class ImprovementPageMixin:
         aging_layout = QVBoxLayout(aging_tab)
         aging_buttons = QHBoxLayout()
         refresh_button = QPushButton("장비대장에서 노후도 자동계산")
-        refresh_button.clicked.connect(self.refresh_aging_table)
+        refresh_button.setToolTip(
+            "명시적 재계산 시 국토교통부 2022 매뉴얼 예시 프리셋을 적용합니다. "
+            "다른 참고자료를 선택해도 해당 자료의 기준표로 자동계산하지 않습니다."
+        )
+        refresh_button.clicked.connect(lambda: self.refresh_aging_table(recalculate=True))
 
         aging_buttons.addWidget(QLabel("내용연수 적용근거"))
         self.lifespan_source_combo = QComboBox()
         self.lifespan_source_combo.addItems(self._lifespan_source_options)
         self.lifespan_source_combo.setCurrentText(
-            "한국부동산원 유형고정자산 내용연수표"
+            DEFAULT_LIFESPAN_SOURCE
         )
         aging_buttons.addWidget(self.lifespan_source_combo)
         aging_buttons.addWidget(refresh_button)
@@ -466,18 +471,31 @@ class ImprovementPageMixin:
             return "주의"
         return "정상"
 
-    def refresh_aging_table(self):
+    def refresh_aging_table(self, *, recalculate=False):
+        # 시스템검토/개선계획 갱신은 저장된 노후도 판단을 재계산하지 않는다.
+        if not recalculate:
+            return
+        previous = {
+            (row.get("대상설비", ""), row.get("장비번호계통명", "")): row
+            for row in self.collect_aging_data()["노후도표"]
+        }
         rows = self.collect_equipment_register_data()
         self.aging_table.setRowCount(0)
         warning_count = 0
-        source = self.lifespan_source_combo.currentText()
+        source = DEFAULT_LIFESPAN_SOURCE
+        self.lifespan_source_combo.setCurrentText(source)
+        unresolved_count = 0
 
         for equipment in rows:
             name = equipment.get("설비종류", "")
             install_year = equipment.get("설치연도", "")
             elapsed = self.calculate_elapsed_years(install_year)
-            lifespan = self._lifespan_by_equipment.get(name, 0)
-            status = self.aging_status(elapsed, lifespan)
+            lifespan = self._lifespan_by_equipment.get(name)
+            saved = previous.get((name, equipment.get("관리번호", "") or "전체"), {})
+            unresolved = not lifespan or lifespan <= 0
+            if unresolved:
+                unresolved_count += 1
+            status = self.aging_status(elapsed, lifespan) if not unresolved else "기준 확인 필요"
 
             if status == "교체검토":
                 status = "교체검토(성능확인 필요)"
@@ -493,12 +511,18 @@ class ImprovementPageMixin:
                 name,
                 equipment.get("관리번호", "") or "전체",
                 install_year,
-                lifespan if lifespan else "-",
+                lifespan if not unresolved else saved.get("참고내용연수", ""),
                 elapsed if elapsed else "-",
                 status,
                 source,
                 equipment.get("비고", ""),
             ]
+            if unresolved:
+                values[7] = saved.get("적용근거", "")
+                values[8] = " / ".join(filter(None, [saved.get("비고", ""), "기준 확인 필요"]))
+                if saved.get("참고내용연수"):
+                    values[5] = saved.get("사용연수", "")
+                    values[6] = saved.get("노후도", "")
 
             for col, value in enumerate(values):
                 self.aging_table.setItem(
@@ -519,9 +543,11 @@ class ImprovementPageMixin:
                 "정기점검과 예방정비를 지속하여 성능저하를 관리할 필요가 있음."
             )
 
+        if unresolved_count:
+            opinion += f" 기준 미확정 {unresolved_count}건은 기준 확인이 필요함."
         self.aging_overall_opinion.setPlainText(opinion)
         self.status_label.setText(
-            f"노후도 분석표 {self.aging_table.rowCount()}건 생성"
+            f"노후도 분석표 {self.aging_table.rowCount()}건 생성 / 기준 확인 필요 {unresolved_count}건"
         )
 
     def auto_draft_improvement_plan(self):
@@ -842,9 +868,13 @@ class ImprovementPageMixin:
         if isinstance(data, dict):
             source = data.get(
                 "내용연수적용근거",
-                "한국부동산원 유형고정자산 내용연수표",
+                "현장 직접입력",
             )
+            if source and self.lifespan_source_combo.findText(source) < 0:
+                self.lifespan_source_combo.addItem(source)
             self.lifespan_source_combo.setCurrentText(source)
+        else:
+            self.lifespan_source_combo.setCurrentText("현장 직접입력")
         keys = ["구분", "대상설비", "장비번호계통명", "설치연도",
                 "참고내용연수", "사용연수", "노후도", "적용근거", "비고"]
         for saved in rows:
@@ -852,7 +882,7 @@ class ImprovementPageMixin:
             self.aging_table.insertRow(row)
             for col, key in enumerate(keys):
                 value = saved.get(key, "")
-                if key == "참고내용연수" and not value:
+                if key == "참고내용연수" and (value is None or not str(value).strip()):
                     value = saved.get("내구연한", "")
                 if key == "적용근거" and not value:
                     value = self.lifespan_source_combo.currentText()

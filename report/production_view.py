@@ -246,7 +246,9 @@ def _aging_view(document: ReportDocument) -> ProductionAgingView:
             management_no=_text(value.get("장비번호계통명", "")),
             installation_year=_text(value.get("설치연도", "")),
             reference_lifespan=_text(
-                value.get("참고내용연수", value.get("내구연한", ""))
+                value.get("참고내용연수")
+                if str(value.get("참고내용연수") or "").strip()
+                else value.get("내구연한", "")
             ),
             elapsed_years=_text(value.get("사용연수", "")),
             aging_status=_review_result(value.get("노후도", "")),
